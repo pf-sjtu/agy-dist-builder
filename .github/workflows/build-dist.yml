@@ -25,20 +25,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: lbjlaq/Antigravity-Manager
-          ref: ${{ inputs.tag }}
+          ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - name: Build frontend
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          npm install --legacy-peer-deps
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)"
+          git rev-parse HEAD > upstream-commit.txt
+          npm ci --legacy-peer-deps
           npm run build
           test -s dist/index.html
-          git rev-parse HEAD > upstream-commit.txt
           tar -C dist -czf dist.tar.gz .
-          sha256sum dist.tar.gz > SHA256SUMS
+          sha256sum dist.tar.gz upstream-commit.txt > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: web-dist
@@ -68,7 +71,13 @@ jobs:
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]
           sha256sum -c SHA256SUMS
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release already exists; refusing to replace it" >&2
-            exit 1
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
+              gh release delete "$TAG" --yes
+            else
+              echo "Published release already exists; refusing to replace it" >&2
+              exit 1
+            fi
           fi
-          gh release create "$TAG" dist.tar.gz SHA256SUMS upstream-commit.txt --title "$TAG web assets" --notes 'Built from the matching upstream release tag.' --prerelease
+          COMMIT=$(cat upstream-commit.txt)
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          gh release create "$TAG" dist.tar.gz SHA256SUMS upstream-commit.txt --title "$TAG web assets" --notes "Upstream tag $TAG, commit $COMMIT. Builder repository tag identifies the workflow revision, not upstream source." --prerelease
